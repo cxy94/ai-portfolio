@@ -112,19 +112,49 @@ def missing_key_message() -> str:
     return (
         f"错误：未设置 {KEY_NAME}。\n"
         f"处理：在 {env_path} 里写一行  {KEY_NAME}=sk-你的密钥\n"
-        f"      没有 .env 就先把 .env.example 复制成 .env；改完重开终端再重试。\n"
+        f"      没有 .env 就先把 .env.example 复制成 .env；改完重试即可（脚本每次都会重读 .env）。\n"
         f"（本次没有发出任何请求，也没有产生费用）"
     )
 
 
+PLACEHOLDER_HINTS = ("在这里", "粘贴", "你的密钥", "replace", "your-key", "xxxx", "改成")
+
+
+def check_key(key: str) -> str:
+    """发请求之前就把“密钥没填对”拦住 —— 这类错误以前会伪装成 UnicodeEncodeError。
+
+    HTTP 头只能是 ASCII，密钥里混进中文，SDK 会在联网之前就抛
+    `'ascii' codec can't encode characters`，看着像代码 bug，其实是 .env 没改。
+    """
+    if not key:
+        raise BotError(missing_key_message())
+    bad = sorted({ch for ch in key if ord(ch) > 127})
+    if bad:
+        raise BotError(
+            f"错误：{KEY_NAME} 里含非 ASCII 字符（{'、'.join(bad[:3])} …），这不是有效密钥。\n"
+            f"      最常见原因：.env 还是 .env.example 的占位符，没换成真密钥。\n"
+            f"      处理：打开 .env，把 {KEY_NAME}= 后面【整段】删掉，粘贴平台后台复制的密钥\n"
+            f"            （形如 sk- 加一串英文字母数字，纯英文、不带引号、不带空格）；\n"
+            f"            保存后直接重跑本条命令，不必重开终端。\n"
+            f"（本次没有发出任何请求，也没有产生费用）"
+        )
+    lowered = key.lower()
+    if any(hint in lowered for hint in PLACEHOLDER_HINTS):
+        raise BotError(
+            f"错误：{KEY_NAME} 看起来还是占位符（{key[:12]}…）。\n"
+            f"      处理：把 .env 里这一行换成平台后台复制的真实密钥（sk- + 32 位字母数字），保存后重跑。\n"
+            f"（本次没有发出任何请求，也没有产生费用）"
+        )
+    return key
+
+
 def get_client():
-    """③ 按需创建客户端：把“缺密钥/缺库”变成一句人话，而不是一堆堆栈。"""
+    """③ 按需创建客户端：把“缺密钥/缺库/密钥写错”变成一句人话，而不是一堆堆栈。"""
     global _client
     if _client is not None:
         return _client
     key = (os.getenv(KEY_NAME) or "").strip().strip('"').strip("'")
-    if not key:
-        raise BotError(missing_key_message())
+    key = check_key(key)
     try:
         import openai
     except ModuleNotFoundError as exc:
@@ -140,6 +170,10 @@ def explain_error(exc: Exception) -> str:
     name = type(exc).__name__
     text = str(exc) or name
     blob = f"{name} {text}".lower()
+    if isinstance(exc, UnicodeEncodeError) or "ascii' codec" in blob:
+        return ("错误：请求头里有非 ASCII 字符（多半是密钥或模型名写成了中文）。\n"
+                "      处理：检查 .env 的 DEEPSEEK_API_KEY 是否还是占位符，"
+                "密钥必须是平台给的英文数字串。")
     if "authentication" in blob or "401" in text or "invalid api key" in blob \
             or "incorrect api key" in blob:
         return ("错误：密钥无效（401 Authentication Fails）。多为密钥抄错、已失效、"
@@ -305,6 +339,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.log_dir:
         os.environ["WEEK4_LOG_DIR"] = args.log_dir
 
+    # ④ 先检查再调用：密钥没配/写错，在问问题、发请求之前就拦住
+    #    （密钥里混进中文时，SDK 会抛 UnicodeEncodeError，看不出真正原因）
+    try:
+        check_key((os.getenv(KEY_NAME) or "").strip().strip('"').strip("'"))
+    except BotError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
     question = " ".join(args.question).strip()
     if not question:
         try:
@@ -317,11 +359,6 @@ def main(argv: list[str] | None = None) -> int:
             return 130
     if not question:
         print('错误：没有输入问题。用法：python week4_api_bot.py "你的问题"', file=sys.stderr)
-        return 2
-
-    # ④ 先检查再调用：密钥没配就别浪费一次网络往返
-    if not (os.getenv(KEY_NAME) or "").strip():
-        print(missing_key_message(), file=sys.stderr)
         return 2
 
     try:

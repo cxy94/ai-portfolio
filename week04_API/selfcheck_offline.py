@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import importlib.util
+import builtins
 import os
 import re
 import shutil
@@ -34,6 +35,10 @@ if TMP.exists():
     shutil.rmtree(TMP, ignore_errors=True)
 TMP.mkdir(parents=True, exist_ok=True)
 PASS, FAIL = [], []
+
+# 自检必须不受仓库里真实 .env 影响：否则“缺密钥”这类用例会被真实密钥顶掉。
+# .env 的解析逻辑另外单独测（见最后一节 _parse_env_file）。
+bot.load_env = lambda: None
 
 
 def check(name: str, condition: bool, detail: str = "") -> None:
@@ -121,9 +126,24 @@ check("缺密钥时不写日志", not list(TMP.rglob("chat_log.txt")))
 check("缺密钥时明确说明没产生费用", "没有产生费用" in err)
 
 # 2. 有密钥但没装 openai 库 → 提示 pip install，而不是堆栈 -------------------
+#    注意：这台机器可能真的装了 openai，所以用导入钩子强行模拟“没装”，
+#    否则这一条会真的去联网（拿假密钥换回 401），而自检承诺不联网。
 fresh_env(DEEPSEEK_API_KEY="sk-fake", WEEK4_LOG_DIR=str(TMP))
 uninstall_fake_openai()
-code, out, err = run(['测试'])
+_real_import = builtins.__import__
+
+
+def _block_openai(name, *args, **kwargs):
+    if name == "openai" or name.startswith("openai."):
+        raise ModuleNotFoundError("No module named 'openai'")
+    return _real_import(name, *args, **kwargs)
+
+
+builtins.__import__ = _block_openai
+try:
+    code, out, err = run(['测试'])
+finally:
+    builtins.__import__ = _real_import
 check("缺 openai 库时退出码为 1", code == 1, f"实际 {code}")
 check("缺 openai 库时提示 pip install", "pip install openai" in err, err[:160])
 
@@ -201,6 +221,28 @@ check("空问题给出用法提示", "用法" in err or "没有输入问题" in 
 source = BOT_PATH.read_text(encoding="utf-8")
 leaked = re.findall(r"sk-[A-Za-z0-9_\-]{16,}", source)
 check("脚本源码中没有真实密钥字样", not leaked, str(leaked[:3]))
+
+# 8.5 密钥写错（占位符/中文）→ 联网之前就拦住，不能伪装成 UnicodeEncodeError
+fresh_env(WEEK4_LOG_DIR=str(TMP))
+for bad_key, expect, label in [
+    ("sk-在这里粘贴你的密钥", "非 ASCII", "中文占位符"),
+    ("sk-REPLACE_ME", "占位符", "英文占位符"),
+]:
+    os.environ["DEEPSEEK_API_KEY"] = bad_key
+    bot._client = None
+    err = ""
+    try:
+        bot.get_client()
+    except bot.BotError as exc:
+        err = str(exc)
+    check(f"{label}密钥被拦下", bool(err), "居然通过了校验")
+    check(f"{label}密钥的提示包含“{expect}”", expect in err, err[:160])
+    check(f"{label}密钥不产生费用", "没有产生费用" in err, err[:160])
+
+try:
+    check("正常密钥能通过校验", bot.check_key("sk-abc123XYZ") == "sk-abc123XYZ")
+except bot.BotError as exc:
+    check("正常密钥能通过校验", False, str(exc))
 
 # 9. .env 兜底解析（没装 python-dotenv 时也能读） ----------------------------
 env_sample = TMP / ".env.sample"

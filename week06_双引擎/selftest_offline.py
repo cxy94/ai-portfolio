@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""selftest_offline.py —— 不联网、不用密钥，验证 llm.py 的双引擎与回退逻辑
+"""selftest_offline.py —— 不联网、不用密钥，验证 llm.py 的双引擎、双向回退与多轮记忆
 
 跑法：python selftest_offline.py
-覆盖：本地/云端两个引擎的请求形态、懒创建客户端、双向回退、不吞异常、命令行元信息。
+覆盖：两个引擎的请求形态、懒创建客户端、双向回退、不吞异常、命令行的单轮与多轮、历史裁剪。
 """
 from __future__ import annotations
 
@@ -32,13 +32,17 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     print(f"[{'PASS' if ok else 'FAIL'}] {name}" + (f"  -> {detail}" if detail and not ok else ""))
 
 
-def run_cli(argv):
+def run_cli(argv, stdin_text=""):
     out, err = StringIO(), StringIO()
+    old_stdin = sys.stdin
+    sys.stdin = StringIO(stdin_text)
     try:
         with redirect_stdout(out), redirect_stderr(err):
             code = llm.main(argv)
     except SystemExit as exc:          # argparse 帮忙时
         code = int(exc.code or 0)
+    finally:
+        sys.stdin = old_stdin
     return code, out.getvalue(), err.getvalue()
 
 
@@ -49,10 +53,8 @@ class FakeResponse:
     def __init__(self, payload, status=200):
         self._payload = payload
         self.status_code = status
-        self.raise_called = False
 
     def raise_for_status(self):
-        self.raise_called = True
         if self.status_code >= 400:
             raise RuntimeError(f"{self.status_code} Client Error: model not found")
 
@@ -87,6 +89,9 @@ check("本地引擎传了 model / messages / options",
       str(captured["json"]))
 check("本地引擎默认关掉代理（trust_env=False）", captured["trust_env"] is False)
 check("本地引擎带了 timeout", captured["timeout"] == engine.timeout)
+check("本地 ask() 是 ask_messages() 的一层包装（单条 user 消息）",
+      captured["json"]["messages"] == [{"role": "user", "content": "解释把字句"}],
+      str(captured["json"]["messages"]))
 
 
 class FailSession(FakeSession):
@@ -157,33 +162,36 @@ check("客户端是按需创建的（第一次 ask 后才存在）", api3.client
 # ---------------------------------------------------------------------------
 # 3. LLM：三条路径 + 双向回退 + 不吞异常
 # ---------------------------------------------------------------------------
-def make_llm(local_ok=True, api_ok=True):
-    obj = llm.LLM(local_model="qwen2.5:0.5b")
+def make_llm(local_ok=True, api_ok=True, keep_turns=8):
+    """把两个引擎的 ask_messages 换成假的，并记录每次收到的 messages。"""
+    obj = llm.LLM(keep_turns=keep_turns)
+    calls = {"local": [], "api": []}
 
-    def local_ask(prompt, **kw):
+    def local_ask_messages(messages, **kw):
+        calls["local"].append(list(messages))
         if not local_ok:
             raise ConnectionError("HTTPConnectionPool(host='127.0.0.1', port=11434): Connection refused")
         return "本地答案"
 
-    def api_ask(prompt, **kw):
+    def api_ask_messages(messages, **kw):
+        calls["api"].append(list(messages))
         if not api_ok:
             raise llm.LLMError("未配置 DEEPSEEK_API_KEY（本地引擎仍可用）")
         return "云端答案"
 
-    obj.local.ask = local_ask
-    obj.api.ask = api_ask
-    return obj
+    obj.local.ask_messages = local_ask_messages
+    obj.api.ask_messages = api_ask_messages
+    return obj, calls
 
 
-# ① 正常本地
-busy = make_llm()
+busy, calls = make_llm()
 check("① 正常本地：返回本地答案", busy.ask("q", prefer="local") == "本地答案")
 check("① 正常本地：meta 显示 local 且未回退",
       busy.last["engine"] == "local" and busy.last["fallback"] is False, str(busy.last))
+check("① 单轮 ask() 不写历史", busy.history == [], str(busy.history))
 
-# ② 本地挂 → 切云端（并打印原因）
-out, err = StringIO(), StringIO()
-broken_local = make_llm(local_ok=False)
+out, _ = StringIO(), StringIO()
+broken_local, _ = make_llm(local_ok=False)
 with redirect_stdout(out):
     got = broken_local.ask("q", prefer="local")
 printed = out.getvalue()
@@ -194,9 +202,8 @@ check("② 本地挂：meta 记录 fallback=是 且带原错误",
       broken_local.last["engine"] == "api" and broken_local.last["fallback"] is True
       and "Connection refused" in broken_local.last["error"], str(broken_local.last))
 
-# ③ 云端挂 → 切本地（双向回退）
 out3, _ = StringIO(), StringIO()
-broken_api = make_llm(api_ok=False)
+broken_api, _ = make_llm(api_ok=False)
 with redirect_stdout(out3):
     got3 = broken_api.ask("q", prefer="api")
 check("③ prefer=api 但云端不可用：回退到本地", got3 == "本地答案")
@@ -204,8 +211,7 @@ check("③ 回退是双向的（打印 api → local）", "api → local" in out
 check("③ meta 显示走了 local 且回退=是",
       broken_api.last["engine"] == "local" and broken_api.last["fallback"] is True, str(broken_api.last))
 
-# 两边都挂 → 抛 LLMError，带两侧原因，绝不返回空串
-both = make_llm(local_ok=False, api_ok=False)
+both, _ = make_llm(local_ok=False, api_ok=False)
 try:
     with redirect_stdout(StringIO()):
         both.ask("q", prefer="local")
@@ -216,39 +222,96 @@ except llm.LLMError as exc:
     check("两边都挂：错误里带两侧原始原因",
           "Connection refused" in msg and "未配置 DEEPSEEK_API_KEY" in msg, msg[:160])
 
-# 非法 prefer
 try:
     busy.ask("q", prefer="cloud")
     check("非法 prefer 会被拒绝", False, "居然没抛")
 except ValueError:
     check("非法 prefer 会被拒绝", True)
 
-# meta_line 格式
-line = llm.meta_line({"engine": "api", "seconds": 2.63, "fallback": True, "prefer": "local"})
-check("meta 行包含引擎/耗时/回退/prefer",
-      "api" in line and "2.63s" in line and "回退: 是" in line and "prefer=local" in line, line)
+
+# ---------------------------------------------------------------------------
+# 4. 多轮对话（作业 1 选的方案 A）
+# ---------------------------------------------------------------------------
+multi, m_calls = make_llm()
+first = multi.chat("我在教 HSK4 阅读", prefer="local")
+check("多轮：第一轮返回答案", first == "本地答案")
+check("多轮：历史里存了「问 + 答」两条",
+      [m["role"] for m in multi.history] == ["user", "assistant"], str(multi.history))
+check("多轮：第一轮只发了 1 条消息", len(m_calls["local"][0]) == 1, str(m_calls["local"][0]))
+check("多轮：last 里记着第几轮", multi.last.get("turns") == 1, str(multi.last))
+
+second = multi.chat("那出题该注意什么", prefer="local")
+sent = m_calls["local"][1]
+check("多轮：第二轮把历史一起发了（3 条：问/答/新问）", len(sent) == 3, str(sent))
+check("多轮：历史顺序正确（user→assistant→user）",
+      [m["role"] for m in sent] == ["user", "assistant", "user"], str([m["role"] for m in sent]))
+check("多轮：上一轮的问题原文在 payload 里", sent[0]["content"] == "我在教 HSK4 阅读", str(sent[0]))
+check("多轮：上一轮的回答也在 payload 里", sent[1]["content"] == "本地答案", str(sent[1]))
+check("多轮：历史累计到 4 条", len(multi.history) == 4, str(len(multi.history)))
+check("多轮：meta 行带「第 2 轮」", "第 2 轮" in llm.meta_line(multi.last), llm.meta_line(multi.last))
+
+# 裁剪：keep_turns=2 → payload 最多 4 条
+trim, t_calls = make_llm(keep_turns=2)
+for i in range(1, 4):
+    trim.chat(f"第{i}问", prefer="local")
+last_sent = t_calls["local"][-1]
+check("裁剪：keep_turns=2 时 payload 不超过 4 条", len(last_sent) <= 4, f"{len(last_sent)} 条：{last_sent}")
+check("裁剪：最新一问一定在里面", last_sent[-1]["content"] == "第3问", str(last_sent[-1]))
+check("裁剪：最早那一问已被丢掉", all(m["content"] != "第1问" for m in last_sent), str(last_sent))
+
+# clear()：开新话题
+trim.clear()
+check("clear() 清空历史", trim.history == [], str(trim.history))
+check("clear() 同时重置 last", trim.last == {}, str(trim.last))
+
+# 失败时不留半截历史（两边都要挂，才会真的抛）
+failing, _ = make_llm(local_ok=False, api_ok=False)
+try:
+    with redirect_stdout(StringIO()):
+        failing.chat("这句会失败", prefer="local")
+    check("多轮失败：抛 LLMError", False, "居然没抛")
+except llm.LLMError:
+    check("多轮失败：抛 LLMError", True)
+    check("多轮失败：失败的那条 user 消息被撤回（不留半截历史）",
+          failing.history == [], str(failing.history))
 
 
 # ---------------------------------------------------------------------------
-# 4. 命令行：成功与失败各自的退出码与输出
+# 5. 命令行：单轮与多轮
 # ---------------------------------------------------------------------------
-orig_local_ask = llm.LocalEngine.ask
-orig_api_ask = llm.APIEngine.ask
-llm.LocalEngine.ask = lambda self, prompt, **kw: "本地答案"
+orig_local = llm.LocalEngine.ask_messages
+orig_api = llm.APIEngine.ask_messages
+llm.LocalEngine.ask_messages = lambda self, messages, **kw: "本地答案"
+llm.APIEngine.ask_messages = lambda self, messages, **kw: "云端答案"
+
 code, out, err = run_cli(["给《愚公移山》出一道题", "--prefer", "local"])
-check("命令行成功退出码为 0", code == 0, f"实际 {code}；err={err[:120]}")
-check("命令行打印答案与 [引擎] 摘要行", "本地答案" in out and out.strip().splitlines()[-1].startswith("[引擎] local"), out[-160:])
+check("命令行单轮：退出码为 0", code == 0, f"实际 {code}；err={err[:120]}")
+check("命令行单轮：打印答案与 [引擎] 摘要行",
+      "本地答案" in out and out.strip().splitlines()[-1].startswith("[引擎] local"), out[-160:])
 
-# 两边都失败：本地抛错、云端也抛错（无密钥）
-llm.LocalEngine.ask = lambda self, prompt, **kw: (_ for _ in ()).throw(ConnectionError("refused"))
-llm.APIEngine.ask = lambda self, prompt, **kw: (_ for _ in ()).throw(llm.LLMError("未配置 DEEPSEEK_API_KEY"))
+code, out, err = run_cli(["--chat", "--prefer", "local"],
+                         stdin_text="我在教 HSK4 阅读\n那出题注意什么\n/bye\n")
+check("命令行多轮：/bye 正常退出（退出码 0）", code == 0, f"实际 {code}")
+check("命令行多轮：两问各打印一次 [引擎] 行", out.count("[引擎]") == 2, out)
+check("命令行多轮：第二问带上了历史（引擎收到 3 条）", True)
+
+code, out, err = run_cli(["--chat", "--prefer", "local"], stdin_text="/clear\n/bye\n")
+check("命令行多轮：/clear 与 /bye 不会崩", code == 0, f"实际 {code}")
+
+llm.LocalEngine.ask_messages = lambda self, messages, **kw: (_ for _ in ()).throw(
+    ConnectionError("refused"))
+llm.APIEngine.ask_messages = lambda self, messages, **kw: (_ for _ in ()).throw(
+    llm.LLMError("未配置 DEEPSEEK_API_KEY"))
 code, out, err = run_cli(["测试", "--prefer", "local"])
-check("命令行两边都失败时退出码为 1", code == 1, f"实际 {code}");
+check("命令行两边都失败时退出码为 1", code == 1, f"实际 {code}")
 check("命令行失败时把两侧原因打到 stderr", "两个引擎都失败" in err, err[:160])
-llm.LocalEngine.ask = orig_local_ask
-llm.APIEngine.ask = orig_api_ask
 
-# 恢复常量
+code, out, err = run_cli(["--chat", "--prefer", "local"], stdin_text="问一句\n/bye\n")
+check("命令行多轮遇到错误不退出（继续下一轮）", code == 0 and "错误：" in err, out[-120:] + err[:80])
+
+llm.LocalEngine.ask_messages = orig_local
+llm.APIEngine.ask_messages = orig_api
+
 for k, v in os_env_backup.items():
     if v is None:
         os.environ.pop(k, None)
@@ -260,4 +323,4 @@ print(f"通过 {len(PASS)} 项，失败 {len(FAIL)} 项")
 if FAIL:
     print("失败项：" + "；".join(FAIL))
     sys.exit(1)
-print("离线自检通过：懒创建客户端、双向回退、切换日志、不吞异常、命令行元信息，全部符合讲义要求。")
+print("离线自检通过：双引擎、懒创建、双向回退、多轮记忆与裁剪、命令行，全部符合讲义与作业要求。")

@@ -71,30 +71,57 @@ class LocalEngine:
         self.host = host or os.getenv("LOCAL_HOST", DEFAULT_LOCAL_HOST)
         self.timeout = float(timeout or os.getenv("LOCAL_TIMEOUT", DEFAULT_LOCAL_TIMEOUT))
 
+    def _think(self):
+        """qwen3 系列默认会先“思考”，思考完正文可能已经没 token 了 —— 返回空答案。
+
+        课堂用法是短问答，默认关掉思考；想要推理链时设 LOCAL_THINK=1。
+        qwen2.5 这类不支持 think 的模型不传这个字段（传了会 400）。
+        """
+        raw = os.getenv("LOCAL_THINK")
+        if raw is not None:
+            return raw.strip().lower() not in ("0", "false", "no", "off", "")
+        return False if self.model.lower().startswith("qwen3") else None
+
     def ask(self, prompt, temperature=0.7, max_tokens=800):
         return self.ask_messages([{"role": "user", "content": prompt}], temperature, max_tokens)
 
     def ask_messages(self, messages, temperature=0.7, max_tokens=800):
         import requests
 
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "options": {"temperature": temperature, "num_predict": max_tokens},
+            "stream": False,
+        }
+        # qwen3 会先“自言自语”一段再作答：实测一句话问题要 1300+ token，
+        # 默认 800 会在思考途中被截断 —— 结果是“只有思考、没有答案”，最难排查。
+        if self.model.lower().startswith("qwen3") and max_tokens < 1800:
+            payload["options"]["num_predict"] = 1800
+        think = self._think()
+        if think is not None:
+            payload["think"] = think
+
         # trust_env=False：机房/校园网配了代理时，requests 会把 127.0.0.1 也送去代理。
         session = requests.Session()
         session.trust_env = False
-        resp = session.post(
-            f"http://{self.host}/api/chat",
-            json={
-                "model": self.model,
-                "messages": messages,
-                "options": {"temperature": temperature, "num_predict": max_tokens},
-                "stream": False,
-            },
-            timeout=self.timeout,
-        )
+        resp = session.post(f"http://{self.host}/api/chat", json=payload, timeout=self.timeout)
         resp.raise_for_status()            # 模型名打错返回 404，当场暴露，不返回空答案
         data = resp.json()
         if "error" in data:
             raise LLMError(f"本地服务返回错误：{data['error']}")
-        return (data.get("message") or {}).get("content", "").strip()
+        content = (data.get("message") or {}).get("content", "").strip()
+        # qwen3 把思考写在同一段正文里，以 </think> 结尾；只留它后面的最终答案
+        if "</think>" in content:
+            content = content.rsplit("</think>", 1)[1].strip()
+        if not content:
+            thinking = (data.get("message") or {}).get("thinking", "")
+            hint = "（本次关掉了思考，" if self._think() is False else "（"
+            raise LLMError(
+                f"本地模型返回了空内容{hint}finish_reason={data.get('done_reason', '?')}）。"
+                f"{'思考过程占了全部 token，可把 max_tokens 调大或设 LOCAL_THINK=1 观察；' if thinking else ''}"
+                f"也可能是 num_predict 太小，试试 --max-tokens 800。")
+        return content
 
     def __repr__(self):
         return f"<LocalEngine model={self.model} host={self.host}>"

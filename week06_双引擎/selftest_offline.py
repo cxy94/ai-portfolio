@@ -108,6 +108,44 @@ except Exception as exc:               # noqa: BLE001
 requests_mod.Session = FakeSession
 
 
+# --- qwen3 的两个坑：思考混进正文、token 不够只剩思考 ---
+class ScriptedSession(FakeSession):
+    payload = None
+
+    def post(self, url, json=None, timeout=None):
+        captured.update(url=url, json=json, timeout=timeout, trust_env=self.trust_env)
+        return FakeResponse(ScriptedSession.payload)
+
+
+requests_mod.Session = ScriptedSession
+ScriptedSession.payload = {"message": {"content": "嗯，我先想想……</think>把字句是「把」+宾语+动词的结构。"}}
+q3 = llm.LocalEngine(model="qwen3:4b")
+answer_q3 = q3.ask("说明把字句", max_tokens=300)
+check("qwen3：只返回 </think> 之后的最终答案",
+      answer_q3 == "把字句是「把」+宾语+动词的结构。", repr(answer_q3))
+check("qwen3：自动把 num_predict 抬到 1800（否则只剩思考）",
+      captured["json"]["options"]["num_predict"] == 1800, str(captured["json"]["options"]))
+check("qwen3：默认关掉思考（think=False）", captured["json"].get("think") is False, str(captured["json"].get("think")))
+
+os.environ["LOCAL_THINK"] = "1"
+q3.ask("说明把字句", max_tokens=300)
+check("LOCAL_THINK=1 时打开思考", captured["json"].get("think") is True, str(captured["json"].get("think")))
+os.environ.pop("LOCAL_THINK", None)
+
+q25 = llm.LocalEngine(model="qwen2.5:0.5b")
+q25.ask("说明把字句", max_tokens=300)
+check("qwen2.5：不传 think 字段（传了会 400）", "think" not in captured["json"], str(captured["json"].keys()))
+check("qwen2.5：不擅自改 num_predict", captured["json"]["options"]["num_predict"] == 300, str(captured["json"]["options"]))
+
+ScriptedSession.payload = {"message": {"content": "", "thinking": "只有思考"}, "done_reason": "length"}
+try:
+    q3.ask("说明把字句", max_tokens=120)
+    check("空答案会抛错（不返回空字符串）", False, "居然没抛")
+except llm.LLMError as exc:
+    check("空答案会抛错（不返回空字符串）", "空内容" in str(exc), str(exc)[:120])
+requests_mod.Session = FakeSession
+
+
 # ---------------------------------------------------------------------------
 # 2. APIEngine：客户端按需创建（没密钥也能纯本地跑）
 # ---------------------------------------------------------------------------

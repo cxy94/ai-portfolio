@@ -1,0 +1,13 @@
+﻿# 密钥与本地环境：绝不进仓库
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 误装进仓库的 Git 本体（只忽略，不删除；磁盘上的 Git\ 照常可用）
+Git/

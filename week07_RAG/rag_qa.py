@@ -519,13 +519,16 @@ def build_bare_prompt(question: str, history: str = "") -> str:
 def check_numbers(answer: str, ctx: str):
     """答案里的数字是否真在检索到的资料里出现过。返回「查无此数」的列表。
 
-    引用坐标（《…》第3段）本身含数字，先剔掉再比，否则全是误报。
+    两条降噪规则（都会让校验偏宽松，宁可漏报不误报——它的定位是「编造报警器」）：
+      · 引用坐标（《…》第3段）本身含数字，先剔掉再比；
+      · 只校验两位以上的数字：单位数多半是「HSK 4级」这种写法，资料里用的是汉字数字
+        （四级/五级），拿来比对只会天天误报——实测 Q1 就报过一个假警（"4"）。
     """
     if not ctx:
         return []
     pool = set(NUM_RE.findall(ctx))
     body = CITED_RE.sub(" ", answer)
-    return [n for n in NUM_RE.findall(body) if n not in pool]
+    return [n for n in NUM_RE.findall(body) if len(n) >= 2 and n not in pool]
 
 
 def verify_citations(answer: str, docs):

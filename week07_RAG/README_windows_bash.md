@@ -9,7 +9,7 @@
 | 课后作业 1：补全 rag_qa.py + 进阶二选一 | 同上（两项进阶都做了） | ✅ |
 | 课后作业 2：对照表扩到 ≥5 组 + 200 字反思 | 同上 | ✅ |
 | 课后作业 3：W8 项目预习 | `week07_RAG/作业3_W8项目预习.md` | ✅ |
-| 附：机器原始记录 / 检索实验 | `hallucination_raw.md`、`检索实验.md` | ✅ 可复现 |
+| 附：机器原始记录 / 检索实验 / 运行记录 | `hallucination_raw.md`、`检索实验.md`、`运行记录.txt` | ✅ 可复现 |
 
 **你机器的现状（我今天实测）**：Ollama 0.40.12 在跑，`nomic-embed-text`（274 MB）已拉、`qwen2.5:0.5b`、`qwen3:4b` 都在；`langchain 1.4.8 / langchain-chroma 1.1.0 / langchain-ollama 1.1.0 / chromadb 1.5.9` 装好了；`.env` 里的云端密钥可用。三条路（纯本地、纯云端、RAG+双引擎）都真跑过。
 
@@ -27,9 +27,15 @@ python rag_qa.py "…" --show-context                        # ④ 把检索到�
 
 python selftest_offline.py                                 # 不联网的 42 项逻辑自测
 python run_hallucination.py                                # 重跑幻觉对照表（4 列 × 6 题）
+python make_run_log.py                                     # 重跑一遍并落成 运行记录.txt（可截图的那份）
 ```
 
 跑完打开 `幻觉对照表.md`（人工结论）与 `hallucination_raw.md`（模型原话）。
+
+**关于截图**：`运行记录.txt` 就是为「要一份能交/能截图的运行证据」准备的——它含完整环境
+（系统、依赖版本、Ollama 模型、分块参数、git 提交号）+ 6 题 × 4 列原话 + 每格引擎/耗时/命中段/数字校验。
+文本比截图可核（能 diff、能搜），要交图片时直接截它的前两屏即可。生成时**不会**写入任何密钥；
+`python make_run_log.py` 会**同时**刷新 `运行记录.txt` 与 `hallucination_raw.md`，两份永远同源。
 
 ## 1. 讲义四步 ↔ 代码在哪
 

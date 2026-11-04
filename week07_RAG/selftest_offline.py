@@ -118,6 +118,8 @@ def main() -> int:
         check("资料里没有的数字被抓出", check_numbers("一共 9999 个", "1000/3245") == ["9999"])
         check("引用坐标里的数字不算编造",
               check_numbers("答案是 3245（见《等级标准节选.txt》第12段）", "1000/3245") == [])
+        check("单位数（如「4级」）不误报",
+              check_numbers("HSK 4级累计 3245 个", "1000/3245") == [])
         good, bad = verify_citations("（见《等级标准节选.txt》第2段）", chunks[:3])
         check("引用检索到的段 → 合法", len(good) == 1 and not bad)
         good2, bad2 = verify_citations("（见《愚公移山.txt》第99段）", chunks[:3])

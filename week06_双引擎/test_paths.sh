@@ -27,11 +27,13 @@ DEAD_HOST="127.0.0.1:11499"        # 没人监听的端口，用来模拟“本�
 BASE="http://${HOST}"
 MODE="simulate"
 DO_CLOUD=1
+DO_CHAT=1
 
 for arg in "$@"; do
   case "$arg" in
     --stop-ollama) MODE="stop" ;;
     --no-cloud)    DO_CLOUD=0 ;;
+    --no-chat)     DO_CHAT=0 ;;
     -h|--help)     sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *)             echo "未知参数：$arg（用 --help 看用法）"; exit 2 ;;
   esac
@@ -86,9 +88,16 @@ run_case() {
   meta="$(printf '%s\n' "$raw" | sed -n 's/^\[引擎\] /&/p' | tail -n 1)"
   engine="$(printf '%s\n' "$meta" | sed -n 's/^\[引擎\] \([^ ]*\) |.*/\1/p')"
   detail="$(printf '%s\n' "$meta" | sed 's/^\[引擎\] //; s/ | / ／ /g')"
+  detail="${detail#* ／ }"          # 去掉重复的引擎名（前面「实际走的引擎」列已有）
 
-  # 答案摘录：优先取第一行“不是日志”的内容
-  answer="$(printf '%s\n' "$raw" | grep -v '^\[首选引擎失败' | grep -v '^\[引擎\]' | grep -v '^-*$' | head -n 1 | trim46)"
+  # 答案摘录：优先取第一行“不是日志、且足够长”的内容（云端首行常是 **题干：** 这种短标记）
+  answer="$(printf '%s\n' "$raw" | grep -v '^\[首选引擎失败' | grep -v '^\[引擎\]' \
+            | grep -v '^-*$' | grep -v '^[[:space:]]*$' | awk 'length($0) >= 12 {print; exit}')"
+  if [ -z "$answer" ]; then
+    answer="$(printf '%s\n' "$raw" | grep -v '^\[首选引擎失败' | grep -v '^\[引擎\]' \
+              | grep -v '^-*$' | grep -v '^[[:space:]]*$' | head -n 1)"
+  fi
+  answer="$(printf '%s' "$answer" | sed 's/^[#*>[:space:]]*//; s/[#*[:space:]]*$//' | trim46)"
 
   if [ "$code" -ne 0 ]; then
     verdict="待你判断：配置问题还是网络问题？"
@@ -161,6 +170,34 @@ else
 "
 fi
 
+# ④⑤ 作业1：多轮记忆（机制看“发出几条消息”，质量单独观察）
+CHAT_NOTE=""
+if [ "$DO_CHAT" = 1 ] && [ "$local_up" = 1 ]; then
+  mt_out="$(mktemp)"
+  mt_err="$(mktemp)"
+  PYTHONUTF8=1 python "$DIR/verify_multiturn.py" --prefer local >"$mt_out" 2>"$mt_err" || true
+  turn2="$(sed -n '2p' "$mt_out")"
+  turn3="$(sed -n '3p' "$mt_out")"
+  CHAT_NOTE="$(grep -E '^\[(PASS|FAIL|WARN)\]' "$mt_err" | tr '\n' ' ')"
+  rm -f "$mt_out" "$mt_err"
+
+  IFS=$'\t' read -r t2_tag t2_n t2_engine t2_sec t2_ans <<< "$turn2"
+  IFS=$'\t' read -r t3_tag t3_n t3_engine t3_sec t3_ans <<< "$turn3"
+
+  say "  第4组 多轮追问 → ${t2_engine:-?} ／ ${t2_n:-?} ／ ${t2_sec:-?}s"
+  say "  第5组 clear 后 → ${t3_engine:-?} ／ ${t3_n:-?} ／ ${t3_sec:-?}s"
+
+  ROWS="${ROWS}| 4 | （作业1）多轮：先说明“班级 32 人”，再追问人数 | ${t2_engine:-—} | ${t2_n:-—} ／ ${t2_sec:-—}s | ${t2_ans:-（空）} | 看下一行机制判定 |
+| 5 | （作业1）\`clear()\` 后再问同一句 | ${t3_engine:-—} | ${t3_n:-—} ／ ${t3_sec:-—}s | ${t3_ans:-（空）} | 应回到 1 条消息且答不出 32 |
+"
+  MECH_NOTE="${CHAT_NOTE:-（未取到多轮判定）}"
+else
+  ROWS="${ROWS}| 4 | （作业1）多轮对话 | — | （跳过） | — | 需要本地服务在跑，且没加 --no-chat |
+| 5 | （作业1）clear() 后 | — | （跳过） | — | 同上 |
+"
+  MECH_NOTE="（本次跳过多轮验证）"
+fi
+
 # ---------- 写 markdown ----------
 {
   printf '# W6 双引擎边界测试记录\n\n'
@@ -175,10 +212,13 @@ fi
     printf -- '  效果与关掉 Ollama 相同（都是 ConnectionError），但不打断你正在用的服务。\n'
     printf -- '  想严格按讲义做：`bash test_paths.sh --stop-ollama`\n'
   fi
-  printf '\n## 一、三条路径\n\n'
+  printf '\n## 一、路径与作业1验证\n\n'
   printf '| # | 测试条件 | 实际走的引擎 | 耗时／回退 | 答案摘录 | 是否符合预期／怎么改的 |\n'
   printf '|---|---|---|---|---|---|\n'
   printf '%s' "$ROWS"
+  printf '\n**作业1（多轮）机制判定**：%s\n' "$MECH_NOTE"
+  printf '判定依据是**发出的消息条数**（1 → 3 → 1），与模型答得好不好无关；\n'
+  printf '0.5b 有时答不出 32，那是模型质量问题，正好写进下面第 4 问。\n'
   printf '\n## 二、回退日志原文（最关键的证据，别只写“成功了”）\n'
   if [ -n "$LOGS" ]; then
     printf '%s' "$LOGS"
@@ -189,6 +229,8 @@ fi
   printf '1. 同一个问题，本地与云端的答案差在哪？各抄一句原话对比：\n\n'
   printf '2. 本地速度 vs 云端速度（看上面的耗时）：\n\n'
   printf '3. 这套封装对你的课堂意味着什么？哪类任务你会固定 `prefer="local"`，哪类固定 `"api"`：\n\n'
+  printf '4. 多轮的代价：`keep_turns=8` 时第 8 轮的 prompt 大约是第一轮的几倍？'
+  printf '若聊 20 轮不裁剪，会发生什么？（提示：云端按输入 token 计费）\n\n'
 } > "$OUT"
 
 say

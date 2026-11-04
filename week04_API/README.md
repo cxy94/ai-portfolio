@@ -1,4 +1,4 @@
-﻿# 第4周 · 第一次 API 调用：把 AI 装进你的程序
+# 第4周 · 第一次 API 调用：把 AI 装进你的程序
 
 **今天要交的三样（讲义第3页）**
 
@@ -179,7 +179,8 @@ git push
 | 症状 | 原因 | 处理 |
 |---|---|---|
 | `ModuleNotFoundError: No module named 'openai'` | 库没装，或装到了别的 Python | `python -m pip install openai python-dotenv`，装完重开终端 |
-| 配好了 `.env` 仍报"未设置 DEEPSEEK_API_KEY" | 终端没重开（环境变量是启动时读的），或文件名叫 `.env.txt` | 重开终端；确认文件名就叫 `.env` |
+| 报 `UnicodeEncodeError: 'ascii' codec can't encode...` | **密钥里还有中文**——`.env` 还是 `.env.example` 的占位符没换 | 把 `.env` 里 `DEEPSEEK_API_KEY=` 后面整段换成真密钥（`sk-` + 字母数字）；保存后直接重跑，**不必**重开终端 |
+| 配好了 `.env` 仍报"未设置 DEEPSEEK_API_KEY" | 值为空、文件名叫 `.env.txt`、或不在仓库根目录 | 确认文件名与值；脚本每次运行都会重读 `.env`，改完直接重跑即可 |
 | 报 401，但密钥看着没错 | 粘贴带了空格/引号/换行 | 重新粘贴，`=` 后不要留空格，别加引号 |
 | 问题只被答了一半 | 中文引号把问题拆开了 | 改用英文 `"`，或者不加引号直接写 |
 | 答案突然断在半句 | `max_tokens` 太小，`finish_reason=length` | 调大到 800；这不是模型坏了 |

@@ -14,6 +14,7 @@
 | `week05_本地部署/` | W5 | Ollama 本地部署：环境体检、拉模型、问答、本地 vs 云端对比脚本 |
 | `week06_双引擎/` | W6 | `llm.py` 双引擎封装（本地 + 云端，`prefer` 切换、双向回退、多轮记忆）+ 边界测试记录 |
 | `week07_RAG/` | W7 | 学科知识库问答器：加载→分块→向量化→检索→llm 生成；出处引用、多轮追问、幻觉对照表 6 组 |
+| `week08_assistant_v1/` | W8 | 阶段项目一：把 W2 提示词 + W6 双引擎 + W7 知识库拼成 `assistant_v1.py`（`use_rag` 开关）+ README 四段式 + 三问三答证据 |
 | `data/` | — | 学科语料：生词表、课文《愚公移山》、等级标准节选 |
 | `weekpath.py` | — | 跨周模块导入 / 数据路径 / `.env` 加载的统一入口 |
 | `setup_check.py` | — | 提交前自检：检查目录结构、依赖、密钥是否误入版本库 |
@@ -43,6 +44,11 @@ python week07_RAG/rag_qa.py --ingest                      # 建库（chroma_db �
 python week07_RAG/rag_qa.py "HSK 四级累计词汇量是多少？"     # 检索 + 生成
 python week07_RAG/rag_qa.py "…" --show-context             # 看检索到的原文
 python week07_RAG/selftest_offline.py                      # 不联网的 42 项自测
+
+# W8：阶段项目一（三块积木拼成一个助手，use_rag 开关切「先查再答 / 纯对话」）
+python week08_assistant_v1/assistant_v1.py "HSK 4 级累计需要掌握多少词汇、多少汉字？"
+python week08_assistant_v1/assistant_v1.py "…" --no-rag --prefer api   # 对照：裸答
+python week08_assistant_v1/assistant_v1.py --demo --out week08_assistant_v1/answer_log.md
 ```
 
 ## 依赖
@@ -53,6 +59,7 @@ python week07_RAG/selftest_offline.py                      # 不联网的 42 项
 - W6：同上（`openai` + `requests`）
 - W7：`pip install langchain langchain-community langchain-chroma langchain-ollama chromadb`
   以及 `ollama pull nomic-embed-text`（274 MB）
+- W8：同 W7（`pip install -r week08_assistant_v1/requirements.txt`），无需新增包
 
 ## 约定
 

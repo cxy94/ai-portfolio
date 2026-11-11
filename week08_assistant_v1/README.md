@@ -78,13 +78,20 @@ assistant_v1.answer(question, use_rag=True, prefer="local")
 - `answer_log.md`：三问三答（词库类 / 数字指标 / 引证类）+ 同一题开/关 RAG 的对照，全部是真实运行输出。
 - 复现：`python week08_assistant_v1/assistant_v1.py --demo --out week08_assistant_v1/answer_log.md`
 
+## 互评
+
+按讲义指定位置写到 [`week08/peer_review.md`](../week08/peer_review.md)：评阅对象 **周家宏（f25210127）**，
+对象仓库 <https://github.com/Jiaozihe313/AI-portfolio>；四维度只记录我执行的命令与看到的原文，
+末尾附 7 条可执行的修改建议。
+
 ## 目录
 
 ```
 week08_assistant_v1/
 ├── assistant_v1.py      # 唯一粘合层：W2 提示词 + W7 检索 + W6 双引擎
 ├── answer_log.md        # 三问三答 + RAG 开/关对照（运行证据）
-├── peer_review.md       # 互评表 + 第 9 周「助手该有的两个工具」
 ├── requirements.txt     # 本项目的依赖（W6/W7 合并，按周装也行）
 └── README.md            # 本文件：四段式 + 5 行映射表
 ```
+
+互评记录单独放在仓库的 `week08/peer_review.md`（讲义规定的提交位置），不重复放两份。

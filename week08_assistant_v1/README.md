@@ -81,8 +81,8 @@ assistant_v1.answer(question, use_rag=True, prefer="local")
 ## 互评
 
 按讲义指定位置写到 [`week08/peer_review.md`](../week08/peer_review.md)：评阅对象 **陈丽琪（f25210102）**，
-对象仓库 <https://github.com/chen99894/ai-portfolio>；四维度只记录我执行的命令与看到的原文，
-末尾附 6 条可执行的修改建议。
+对象仓库 <https://gitee.com/chenliqi302241/ai-portfolio>（分配表登记的是 GitHub 地址，实际提交在 Gitee，按 Gitee 评）；
+四维度只记录我执行的命令与看到的原文，末尾附 6 条可执行的修改建议。
 
 ## 目录
 
